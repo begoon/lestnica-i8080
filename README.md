@@ -51,14 +51,14 @@ Requirements: `bun` (for `bunx asm8080`), `just`, `python3`.
 |---|---|
 | `LESTNICA.GAM` | original game binary (7712 bytes, org 0100h) — **unmodified original work** |
 | `LESTNICA-TAPE.GAM` | tape-format copy (5-byte header + 3-byte trailer) — **unmodified original work** |
-| `lestnica.asm` | annotated source (assembles byte-identical to `LESTNICA.GAM`) |
-| `lestnica.lst` | assembler listing with addresses and symbol table |
+| [`lestnica.asm`](lestnica.asm) | annotated source (assembles byte-identical to `LESTNICA.GAM`) |
+| [`lestnica.lst`](lestnica.lst) | assembler listing with addresses and symbol table |
 | `lestnica.bin` | assembled output (generated; gitignored) |
-| `disasm.py` | single-file Python Intel 8080 linear disassembler (used to seed `lestnica.asm`) |
-| `render_screen.py` | level / title-screen extractor — decodes RLE screen data into 78×30 ASCII-art text files |
-| `levels/title.txt` | rendered title/menu screen |
-| `levels/level_A.txt` .. `levels/level_G.txt` | rendered playfields for the 7 unique levels |
-| `info/rk86-charmap.md` | RK86 character-set reference (ASCII + Cyrillic + block glyphs) |
+| [`disasm.py`](disasm.py) | single-file Python Intel 8080 linear disassembler (used to seed `lestnica.asm`) |
+| [`render_screen.py`](render_screen.py) | level / title-screen extractor — decodes RLE screen data into 78×30 ASCII-art text files |
+| [`levels/title.txt`](levels/title.txt) | rendered title/menu screen |
+| [`levels/level_A.txt`](levels/level_A.txt), [`B`](levels/level_B.txt), [`C`](levels/level_C.txt), [`D`](levels/level_D.txt), [`E`](levels/level_E.txt), [`F`](levels/level_F.txt), [`G`](levels/level_G.txt) | rendered playfields for the 7 unique levels |
+| [`info/rk86-charmap.md`](info/rk86-charmap.md) | RK86 character-set reference (ASCII + Cyrillic + block glyphs) |
 | `CLAUDE.md` | conventions, known game mechanics, and findings accumulated during analysis |
 | `Justfile` | build recipes |
 

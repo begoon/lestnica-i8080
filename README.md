@@ -1,5 +1,7 @@
 # Lestnica (Лестница) — Annotated Disassembly
 
+[![build](https://github.com/begoon/lestnica-i8080/actions/workflows/build.yaml/badge.svg)](https://github.com/begoon/lestnica-i8080/actions/workflows/build.yaml)
+
 An educational, byte-exact annotated disassembly of **Лестница** ("Ladder") — an
 Intel 8080 game written in 1987 for the **Radio-86RK** (Радио-86РК) home
 computer. The original game is credited on the title screen to **Симонов Ю.Б.**

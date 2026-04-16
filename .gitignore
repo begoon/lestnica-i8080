@@ -1,0 +1,6 @@
+.claude/settings.local.json
+lestnica.bin
+*.hex
+0100-1F1F.bin
+node_modules
+bun.lock

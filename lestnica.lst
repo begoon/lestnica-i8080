@@ -15,9 +15,33 @@
 
 =0809               prng_state       equ 0809h      ; 32-bit PRNG state (D:E at +0/+1, H:L at +2/+3)
 
+                    ; Tile glyphs (RK86 char codes). Cross-referenced with the Z80 port at
+                    ; https://github.com/imsushka/TangNano20K-VIDEO/blob/main/soft/LESTNICA.asm
+=0009               CHR_PLAYER       equ 09h        ; flower glyph -- the player
+=000B               CHR_MUSHROOM     equ 0Bh        ; up-arrow glyph -- kills on contact
+=001E               CHR_APPLE        equ 1Eh        ; "pleasant thing" -- +90 BCD points
+=0055               CHR_STONEHOLDER  equ 55h        ; 'U' -- spawns falling stones
+=004F               CHR_STONE        equ 4Fh        ; 'O' -- boulder; kills on contact
+=002A               CHR_STONEKILL    equ 2Ah        ; '*' -- stone-kill splat
+=0048               CHR_LAD          equ 48h        ; 'H' -- ladder (climb with up-arrow)
+=002E               CHR_JOKER        equ 2Eh        ; '.' -- random-direction trap; 50% jump 2
+=0024               CHR_EXIT         equ 24h        ; '$' -- level exit (awards time bonus)
+=0023               CHR_BRICK        equ 23h        ; '#' -- solid wall
+=002D               CHR_BRIDGE       equ 2Dh        ; '-' -- horizontal bridge
+=003D               CHR_FLOOR        equ 3Dh        ; '=' -- horizontal floor
+
+                    ; Movement / arrow-key codes (as returned by the RK86 monitor)
+=0008               ARROW_LEFT       equ 08h        ; left arrow
+=0018               ARROW_RIGHT      equ 18h        ; right arrow
+=0019               ARROW_UP         equ 19h        ; up arrow
+=001A               ARROW_DOWN       equ 1Ah        ; down arrow
+=0010               ARROW_INVERSE    equ 10h        ; ARROW_LEFT XOR ARROW_RIGHT (used to flip direction)
+=0020               KEY_JUMP         equ 20h        ; Space -- sets jump flag in var_key
+=0080               KEY_JUMP_FLAG    equ 80h        ; bit 7 of var_key = "jump queued"
+
 0100:               loc_0100:
 0100: 31 FF 69              lxi  sp, 69FFh
-0103: 21 14 08              lxi  h, var_0814
+0103: 21 14 08              lxi  h, var_attempts
 0106: 36 07                 mvi  m, 07h
 0108: 21 62 08              lxi  h, level_table
 010B: 22 1B 08              shld var_081B
@@ -29,15 +53,15 @@
 0117: 36 17                 mvi  m, 17h
 0119: 23                    inx  h
 011A: 36 71                 mvi  m, 71h                  ; 'q'
-011C: 21 17 08              lxi  h, var_0817
+011C: 21 17 08              lxi  h, var_level
 011F: 36 01                 mvi  m, 01h
 0121: 21 00 00              lxi  h, 0000h
-0124: 22 18 08              shld var_0818
+0124: 22 18 08              shld var_score_lo
 0127: C3 CB 06              jmp  loc_06CB
-012A:               loc_012A:
-012A: 21 11 08              lxi  h, var_0811
+012A:               run_game:
+012A: 21 11 08              lxi  h, var_dead
 012D: 36 00                 mvi  m, 00h
-012F: 21 1A 08              lxi  h, var_081A
+012F: 21 1A 08              lxi  h, var_exit_touched
 0132: 36 00                 mvi  m, 00h
 0134: 2A 1B 08              lhld var_081B
 0137: 5E                    mov  e, m
@@ -53,7 +77,7 @@
 0147: CA A1 07              jz   loc_07A1
 014A:               loc_014A:
 014A: CD 5B 01              call paint_screen
-014D: CD C2 07              call loc_07C2
+014D: CD C2 07              call find_player_and_stone
 0150: 21 D0 08              lxi  h, msg_get_ready
 0153: CD 18 F8              call monitor_puts
 0156: 00                    nop
@@ -112,10 +136,10 @@
                     ; Clears the 8-slot dynamic actor table at 0820h, redraws the flower,
                     ; resets tick counters, and primes HUD counter 0815h.
 0197:               new_life:                                       ; offset=0197h
-0197: 01 20 08              lxi  b, table_0820        ; BC = base (for end-of-loop test)
-019A: 21 20 08              lxi  h, table_0820        ; HL = write ptr
+0197: 01 20 08              lxi  b, stone_table        ; BC = base (for end-of-loop test)
+019A: 21 20 08              lxi  h, stone_table        ; HL = write ptr
                     ; Fill 8 actor slots [addr_lo, addr_hi, 'U', 1Ah] = inactive defaults.
-019D:               new_life_reset_actors:                          ; offset=019Dh
+019D:               clear_stone_table:                          ; offset=019Dh
 019D: 36 00                 mvi  m, 00h          ; slot+0: addr lo
 019F: 23                    inx  h
 01A0: 36 00                 mvi  m, 00h          ; slot+1: addr hi
@@ -127,67 +151,67 @@
 01A9: 7D                    mov  a, l
 01AA: 91                    sub  c
 01AB: FE 20                 cpi  20h             ; stop after 32 bytes (8 slots)
-01AD: C2 9D 01              jnz  new_life_reset_actors
+01AD: C2 9D 01              jnz  clear_stone_table
 01B0: 2A 12 08              lhld var_0812           ; cached flower address
 01B3: 36 09                 mvi  m, 09h          ; redraw flower glyph in video memory
-01B5: 22 00 08              shld var_0800           ; working pointer = flower addr
-01B8: 21 02 08              lxi  h, var_0802
-01BB: 36 00                 mvi  m, 00h          ; 0802h = tick counter
+01B5: 22 00 08              shld var_player_addr           ; working pointer = flower addr
+01B8: 21 02 08              lxi  h, var_player_stat
+01BB: 36 00                 mvi  m, 00h          ; var_player_stat = empty
 01BD: 23                    inx  h
-01BE: 36 00                 mvi  m, 00h          ; 0803h = direction flag
+01BE: 36 00                 mvi  m, 00h          ; var_key = no direction / no jump
 01C0: 23                    inx  h
-01C1: 36 00                 mvi  m, 00h          ; 0804h = 0
-01C3: 21 11 08              lxi  h, var_0811
+01C1: 36 00                 mvi  m, 00h          ; var_jump_byte = 0
+01C3: 21 11 08              lxi  h, var_dead
 01C6: 36 00                 mvi  m, 00h
-01C8: 21 1A 08              lxi  h, var_081A
+01C8: 21 1A 08              lxi  h, var_exit_touched
 01CB: 36 00                 mvi  m, 00h
-01CD: 21 15 08              lxi  h, var_0815
+01CD: 21 15 08              lxi  h, var_time
 01D0: 36 40                 mvi  m, 40h          ; HUD BCD counter = 40h
                     ; Outer tick: reload sub-tick counter 0816h = 15.
 01D2:               game_tick_outer:                                ; offset=01D2h
-01D2: 21 16 08              lxi  h, var_0816
+01D2: 21 16 08              lxi  h, var_tick
 01D5: 36 0F                 mvi  m, 0Fh
                     ; Main game loop head: decrement sub-tick 0816h each iteration.
 01D7:               game_tick_inner:                                ; offset=01D7h
-01D7: 21 16 08              lxi  h, var_0816
+01D7: 21 16 08              lxi  h, var_tick
 01DA: 7E                    mov  a, m
 01DB: 3D                    dcr  a
 01DC: 77                    mov  m, a
 01DD: CA 49 02              jz   loc_0249
 01E0: CD 8C 01              call delay_preset
-01E3: CD 9E 03              call loc_039E
-01E6: CD 16 06              call loc_0616
-01E9: CD E5 02              call loc_02E5
-01EC: CD 79 02              call loc_0279
-01EF: 21 1A 08              lxi  h, var_081A
+01E3: CD 9E 03              call keyboard
+01E6: CD 16 06              call stone_step
+01E9: CD E5 02              call player_step
+01EC: CD 79 02              call draw_status_row
+01EF: 21 1A 08              lxi  h, var_exit_touched
 01F2: 7E                    mov  a, m
 01F3: FE FF                 cpi  0FFh
-01F5: CA C7 02              jz   loc_02C7
-01F8: 21 15 08              lxi  h, var_0815
+01F5: CA C7 02              jz   inc_level
+01F8: 21 15 08              lxi  h, var_time
 01FB: 7E                    mov  a, m
 01FC: FE 00                 cpi  00h
-01FE: CA 0A 02              jz   loc_020A
-0201: 21 11 08              lxi  h, var_0811
+01FE: CA 0A 02              jz   game_over
+0201: 21 11 08              lxi  h, var_dead
 0204: 7E                    mov  a, m
 0205: FE FF                 cpi  0FFh
 0207: C2 D7 01              jnz  game_tick_inner
-020A:               loc_020A:
-020A: 21 02 08              lxi  h, var_0802
+020A:               game_over:
+020A: 21 02 08              lxi  h, var_player_stat
 020D: 7E                    mov  a, m
-020E: FE 4F                 cpi  4Fh                     ; 'O'
+020E: FE 4F                 cpi  CHR_STONE
 0210: CA 1C 02              jz   loc_021C
-0213: 2A 00 08              lhld var_0800
+0213: 2A 00 08              lhld var_player_addr
 0216: 77                    mov  m, a
 0217: 0E 07                 mvi  c, 07h
 0219: CD 09 F8              call monitor_cout
 021C:               loc_021C:
-021C: 21 22 08              lxi  h, table_0820 + 2
-021F: 01 22 08              lxi  b, table_0820 + 2
+021C: 21 22 08              lxi  h, stone_table + 2
+021F: 01 22 08              lxi  b, stone_table + 2
 0222:               loc_0222:
 0222: 7E                    mov  a, m
-0223: FE 09                 cpi  09h
+0223: FE 09                 cpi  CHR_PLAYER
 0225: CA 3B 02              jz   loc_023B
-0228: FE 4F                 cpi  4Fh                     ; 'O'
+0228: FE 4F                 cpi  CHR_STONE
 022A: CA 3B 02              jz   loc_023B
 022D: FE 20                 cpi  20h                     ; ' '
 022F: CA 3B 02              jz   loc_023B
@@ -211,7 +235,7 @@
 0243: C2 22 02              jnz  loc_0222
 0246: C3 65 02              jmp  loc_0265
 0249:               loc_0249:
-0249: 21 15 08              lxi  h, var_0815
+0249: 21 15 08              lxi  h, var_time
 024C: 7E                    mov  a, m
 024D: 47                    mov  b, a
 024E: 3E 9A                 mvi  a, 9Ah
@@ -226,7 +250,7 @@
 025F: CD 09 F8              call monitor_cout
 0262: C3 D2 01              jmp  game_tick_outer
 0265:               loc_0265:
-0265: 21 14 08              lxi  h, var_0814
+0265: 21 14 08              lxi  h, var_attempts
 0268: 7E                    mov  a, m
 0269: 47                    mov  b, a
 026A: 3E 9A                 mvi  a, 9Ah
@@ -237,20 +261,20 @@
 0271: FE 00                 cpi  00h
 0273: C2 97 01              jnz  new_life
 0276: C3 00 01              jmp  loc_0100
-0279:               loc_0279:
+0279:               draw_status_row:
 0279: 21 B3 02              lxi  h, cursor_r24_c8
 027C: CD 18 F8              call monitor_puts
-027F: 21 17 08              lxi  h, var_0817
+027F: 21 17 08              lxi  h, var_level
 0282: 7E                    mov  a, m
 0283: CD 15 F8              call monitor_hexb
 0286: 21 B8 02              lxi  h, cursor_r24_c21
 0289: CD 18 F8              call monitor_puts
-028C: 21 14 08              lxi  h, var_0814
+028C: 21 14 08              lxi  h, var_attempts
 028F: 7E                    mov  a, m
 0290: CD 15 F8              call monitor_hexb
 0293: 21 BD 02              lxi  h, cursor_r24_c31
 0296: CD 18 F8              call monitor_puts
-0299: 21 19 08              lxi  h, var_0819
+0299: 21 19 08              lxi  h, var_score_hi
 029C: 7E                    mov  a, m
 029D: CD 15 F8              call monitor_hexb
 02A0: 2B                    dcx  h
@@ -258,7 +282,7 @@
 02A2: CD 15 F8              call monitor_hexb
 02A5: 21 C2 02              lxi  h, cursor_r24_c44
 02A8: CD 18 F8              call monitor_puts
-02AB: 21 15 08              lxi  h, var_0815
+02AB: 21 15 08              lxi  h, var_time
 02AE: 7E                    mov  a, m
 02AF: CD 15 F8              call monitor_hexb
 02B2: C9                    ret
@@ -277,33 +301,33 @@
 02C2:               cursor_r24_c44:                                 ; offset=02C2h
 02C2: 1B 59 38 4C           db   1Bh, "Y", 38h, 4Ch, 0
 02C6: 00
-02C7:               loc_02C7:
-02C7: CD D5 02              call loc_02D5
-02CA: 21 17 08              lxi  h, var_0817
+02C7:               inc_level:
+02C7: CD D5 02              call add_time_bonus
+02CA: 21 17 08              lxi  h, var_level
 02CD: 7E                    mov  a, m
 02CE: C6 01                 adi  01h
 02D0: 27                    daa
 02D1: 77                    mov  m, a
 02D2: C3 E2 02              jmp  loc_02E2
-02D5:               loc_02D5:
-02D5: 21 15 08              lxi  h, var_0815
+02D5:               add_time_bonus:
+02D5: 21 15 08              lxi  h, var_time
 02D8: 46                    mov  b, m
 02D9: 36 00                 mvi  m, 00h
 02DB: F5                    push psw
 02DC: C5                    push b
 02DD: D5                    push d
 02DE: E5                    push h
-02DF: C3 F6 02              jmp  loc_02F6
+02DF: C3 F6 02              jmp  inc_score
 02E2:               loc_02E2:
-02E2: C3 2A 01              jmp  loc_012A
-02E5:               loc_02E5:
+02E2: C3 2A 01              jmp  run_game
+02E5:               player_step:
 02E5: F5                    push psw
 02E6: C5                    push b
 02E7: D5                    push d
 02E8: E5                    push h
-02E9: 21 02 08              lxi  h, var_0802
+02E9: 21 02 08              lxi  h, var_player_stat
 02EC: 7E                    mov  a, m
-02ED: FE 1E                 cpi  1Eh
+02ED: FE 1E                 cpi  CHR_APPLE
 02EF: C2 19 03              jnz  loc_0319
 02F2: 36 00                 mvi  m, 00h
 02F4: 06 45                 mvi  b, 45h                  ; 'E'
@@ -311,8 +335,8 @@
                     ; Also bumps 0814h by 1 each time the low score byte rolls past 99
                     ; (i.e. +1 per 100 score points — the bonus-life-per-100-pts mechanic).
                     ; Beeps once on return.
-02F6:               loc_02F6:                                       ; offset=02F6h
-02F6: 21 18 08              lxi  h, var_0818    ; score lo
+02F6:               inc_score:                                       ; offset=02F6h
+02F6: 21 18 08              lxi  h, var_score_lo    ; score lo
 02F9: 7E                    mov  a, m
 02FA: 80                    add  b           ; lo += B
 02FB: 27                    daa
@@ -326,34 +350,34 @@
 0305: 80                    add  b           ; hi += carry
 0306: 27                    daa
 0307: 77                    mov  m, a
-0308: 21 14 08              lxi  h, var_0814
+0308: 21 14 08              lxi  h, var_attempts
 030B: 7E                    mov  a, m
 030C: 80                    add  b           ; 0814h += carry (NOT original B) — +1 per 100 pts
 030D: 27                    daa
 030E: 77                    mov  m, a
 030F: 0E 07                 mvi  c, 07h      ; BEL
 0311: CD 09 F8              call monitor_cout
-0314:               loc_0314:
+0314:               player_step_exit:
 0314: E1                    pop  h
 0315: D1                    pop  d
 0316: C1                    pop  b
 0317: F1                    pop  psw
 0318: C9                    ret
 0319:               loc_0319:
-0319: FE 0B                 cpi  0Bh
+0319: FE 0B                 cpi  CHR_MUSHROOM
 031B: C2 2B 03              jnz  loc_032B
-031E:               loc_031E:
-031E: 21 11 08              lxi  h, var_0811
+031E:               player_dead:
+031E: 21 11 08              lxi  h, var_dead
 0321: 36 FF                 mvi  m, 0FFh
 0323: 0E 07                 mvi  c, 07h
 0325: CD 09 F8              call monitor_cout
-0328: C3 14 03              jmp  loc_0314
+0328: C3 14 03              jmp  player_step_exit
 032B:               loc_032B:
-032B: FE 4F                 cpi  4Fh     ; 'O'
-032D: CA 1E 03              jz   loc_031E
-0330: FE 48                 cpi  48h     ; 'H'
+032B: FE 4F                 cpi  CHR_STONE
+032D: CA 1E 03              jz   player_dead
+0330: FE 48                 cpi  CHR_LAD
 0332: C2 48 03              jnz  loc_0348
-0335: 21 03 08              lxi  h, var_0803
+0335: 21 03 08              lxi  h, var_key
 0338: 7E                    mov  a, m
 0339: E6 80                 ani  80h
 033B: FE 00                 cpi  00h
@@ -361,11 +385,11 @@
 0340: 36 00                 mvi  m, 00h
 0342: 23                    inx  h
 0343: 36 00                 mvi  m, 00h
-0345: C3 14 03              jmp  loc_0314
+0345: C3 14 03              jmp  player_step_exit
 0348:               loc_0348:
-0348: FE 2E                 cpi  2Eh                     ; '.'
+0348: FE 2E                 cpi  CHR_JOKER
 034A: C2 91 03              jnz  loc_0391
-034D: 21 03 08              lxi  h, var_0803
+034D: 21 03 08              lxi  h, var_key
 0350: CD 46 05              call prng_next
 0353: D6 3F                 sui  3Fh                     ; '?'
 0355: FA 5D 03              jm   loc_035D
@@ -382,107 +406,107 @@
 036A: 77                    mov  m, a
 036B: 23                    inx  h
 036C: 36 02                 mvi  m, 02h
-036E: C3 14 03              jmp  loc_0314
+036E: C3 14 03              jmp  player_step_exit
 0371:               loc_0371:
 0371: 23                    inx  h
 0372: 36 00                 mvi  m, 00h
-0374: C3 14 03              jmp  loc_0314
+0374: C3 14 03              jmp  player_step_exit
 0377:               loc_0377:
 0377: 06 03                 mvi  b, 03h
-0379: 2A 00 08              lhld var_0800
+0379: 2A 00 08              lhld var_player_addr
 037C:               loc_037C:
 037C: EB                    xchg
 037D: CD 2A 05              call de_row_down
 0380: EB                    xchg
 0381: 7E                    mov  a, m
-0382: FE 4F                 cpi  4Fh                     ; 'O'
-0384: CA F6 02              jz   loc_02F6
+0382: FE 4F                 cpi  CHR_STONE
+0384: CA F6 02              jz   inc_score
 0387: 05                    dcr  b
 0388: 78                    mov  a, b
 0389: FE 01                 cpi  01h
-038B: CA 14 03              jz   loc_0314
+038B: CA 14 03              jz   player_step_exit
 038E: C3 7C 03              jmp  loc_037C
 0391:               loc_0391:
-0391: FE 24                 cpi  24h                     ; '$'
+0391: FE 24                 cpi  CHR_EXIT
 0393: C2 77 03              jnz  loc_0377
-0396: 21 1A 08              lxi  h, var_081A
+0396: 21 1A 08              lxi  h, var_exit_touched
 0399: 36 FF                 mvi  m, 0FFh
-039B: C3 14 03              jmp  loc_0314
-039E:               loc_039E:
+039B: C3 14 03              jmp  player_step_exit
+039E:               keyboard:
 039E: F5                    push psw
 039F: E5                    push h
 03A0: D5                    push d
 03A1: C5                    push b
 03A2: CD 1B F8              call monitor_scan_kbd
 03A5: FE FF                 cpi  0FFh
-03A7: CA 16 04              jz   loc_0416
+03A7: CA 16 04              jz   player_fall_or_move
 03AA: FE 03                 cpi  03h
 03AC: C2 BA 03              jnz  loc_03BA
 03AF:               loc_03AF:
 03AF: CD 03 F8              call monitor_cin
 03B2: FE 0D                 cpi  0Dh
 03B4: C2 AF 03              jnz  loc_03AF
-03B7: C3 16 04              jmp  loc_0416
+03B7: C3 16 04              jmp  player_fall_or_move
                     ; Arrow-key switch. Stores the pressed direction in the low 7 bits of
-                    ; var_0803 while preserving bit 7 (state flag). Pattern per arm:
-                    ;   var_0803 = (var_0803 & 80h) | key_code
+                    ; var_key while preserving bit 7 (state flag). Pattern per arm:
+                    ;   var_key = (var_key & 80h) | key_code
 03BA:               loc_03BA:                                       ; offset=03BAh
-03BA: FE 08                 cpi  08h                                ; left arrow
+03BA: FE 08                 cpi  ARROW_LEFT
 03BC: C2 CB 03              jnz  loc_03CB
-03BF: 21 03 08              lxi  h, var_0803
+03BF: 21 03 08              lxi  h, var_key
 03C2: 7E                    mov  a, m
-03C3: E6 80                 ani  80h
-03C5: C6 08                 adi  08h
+03C3: E6 80                 ani  KEY_JUMP_FLAG
+03C5: C6 08                 adi  ARROW_LEFT
 03C7: 77                    mov  m, a
-03C8: C3 16 04              jmp  loc_0416
+03C8: C3 16 04              jmp  player_fall_or_move
 03CB:               loc_03CB:                                       ; offset=03CBh
-03CB: FE 18                 cpi  18h                                ; right arrow
+03CB: FE 18                 cpi  ARROW_RIGHT
 03CD: C2 DC 03              jnz  loc_03DC
-03D0: 21 03 08              lxi  h, var_0803
+03D0: 21 03 08              lxi  h, var_key
 03D3: 7E                    mov  a, m
-03D4: E6 80                 ani  80h
-03D6: C6 18                 adi  18h
+03D4: E6 80                 ani  KEY_JUMP_FLAG
+03D6: C6 18                 adi  ARROW_RIGHT
 03D8: 77                    mov  m, a
-03D9: C3 16 04              jmp  loc_0416
+03D9: C3 16 04              jmp  player_fall_or_move
 03DC:               loc_03DC:                                       ; offset=03DCh
-03DC: FE 19                 cpi  19h                                ; up arrow
+03DC: FE 19                 cpi  ARROW_UP
 03DE: C2 ED 03              jnz  loc_03ED
-03E1: 21 03 08              lxi  h, var_0803
+03E1: 21 03 08              lxi  h, var_key
 03E4: 7E                    mov  a, m
-03E5: E6 80                 ani  80h
-03E7: C6 19                 adi  19h
+03E5: E6 80                 ani  KEY_JUMP_FLAG
+03E7: C6 19                 adi  ARROW_UP
 03E9: 77                    mov  m, a
-03EA: C3 16 04              jmp  loc_0416
+03EA: C3 16 04              jmp  player_fall_or_move
 03ED:               loc_03ED:                                       ; offset=03EDh
-03ED: FE 1A                 cpi  1Ah                                ; down arrow
+03ED: FE 1A                 cpi  ARROW_DOWN
 03EF: C2 FE 03              jnz  loc_03FE
-03F2: 21 03 08              lxi  h, var_0803
+03F2: 21 03 08              lxi  h, var_key
 03F5: 7E                    mov  a, m
-03F6: E6 80                 ani  80h
-03F8: C6 1A                 adi  1Ah
+03F6: E6 80                 ani  KEY_JUMP_FLAG
+03F8: C6 1A                 adi  ARROW_DOWN
 03FA: 77                    mov  m, a
-03FB: C3 16 04              jmp  loc_0416
+03FB: C3 16 04              jmp  player_fall_or_move
 03FE:               loc_03FE:
-03FE: FE 20                 cpi  20h                     ; ' '
+03FE: FE 20                 cpi  KEY_JUMP                           ; Space — queue jump
 0400: C2 0F 04              jnz  loc_040F
-0403: 21 03 08              lxi  h, var_0803
+0403: 21 03 08              lxi  h, var_key
 0406: 7E                    mov  a, m
-0407: E6 7F                 ani  7Fh
-0409: C6 80                 adi  80h
+0407: E6 7F                 ani  7Fh                                ; keep direction bits
+0409: C6 80                 adi  KEY_JUMP_FLAG                      ; set jump bit
 040B: 77                    mov  m, a
-040C: C3 16 04              jmp  loc_0416
-040F:               loc_040F:
-040F: 21 03 08              lxi  h, var_0803
+040C: C3 16 04              jmp  player_fall_or_move
+040F:               loc_040F:                                       ; other key: clear direction, keep jump
+040F: 21 03 08              lxi  h, var_key
 0412: 7E                    mov  a, m
-0413: E6 80                 ani  80h
+0413: E6 80                 ani  KEY_JUMP_FLAG
 0415: 77                    mov  m, a
-0416:               loc_0416:
-0416: 21 04 08              lxi  h, var_0804
+0416:               player_fall_or_move:
+0416: 21 04 08              lxi  h, var_jump_byte
 0419: 7E                    mov  a, m
 041A: E6 7F                 ani  7Fh
 041C: FE 00                 cpi  00h
-041E: C2 6E 04              jnz  loc_046E
-0421: 21 00 08              lxi  h, var_0800
+041E: C2 6E 04              jnz  player_move_dispatch
+0421: 21 00 08              lxi  h, var_player_addr
 0424: 5E                    mov  e, m
 0425: 23                    inx  h
 0426: 56                    mov  d, m
@@ -490,48 +514,48 @@
 0428: CD 2A 05              call de_row_down
 042B: EB                    xchg
 042C: 7E                    mov  a, m
-042D: FE 3D                 cpi  3Dh                     ; '='
-042F: CA 6E 04              jz   loc_046E
-0432: FE 23                 cpi  23h                     ; '#'
-0434: CA 6E 04              jz   loc_046E
-0437: FE 2D                 cpi  2Dh                     ; '-'
+042D: FE 3D                 cpi  CHR_FLOOR
+042F: CA 6E 04              jz   player_move_dispatch
+0432: FE 23                 cpi  CHR_BRICK
+0434: CA 6E 04              jz   player_move_dispatch
+0437: FE 2D                 cpi  CHR_BRIDGE
 0439: CA 3F 04              jz   loc_043F
-043C: C3 44 04              jmp  loc_0444
+043C: C3 44 04              jmp  player_fall_check
 043F:               loc_043F:
 043F: 36 00                 mvi  m, 00h
-0441: C3 6E 04              jmp  loc_046E
-0444:               loc_0444:
+0441: C3 6E 04              jmp  player_move_dispatch
+0444:               player_fall_check:
 0444: 44                    mov  b, h
 0445: 4D                    mov  c, l
-0446: 21 02 08              lxi  h, var_0802
+0446: 21 02 08              lxi  h, var_player_stat
 0449: 7E                    mov  a, m
-044A: FE 48                 cpi  48h                     ; 'H'
+044A: FE 48                 cpi  CHR_LAD
 044C: C2 55 04              jnz  loc_0455
 044F: 69                    mov  l, c
 0450: 60                    mov  h, b
 0451: EB                    xchg
-0452: C3 6E 04              jmp  loc_046E
+0452: C3 6E 04              jmp  player_move_dispatch
 0455:               loc_0455:
 0455: 60                    mov  h, b
 0456: 69                    mov  l, c
 0457: EB                    xchg
-0458: 2A 00 08              lhld var_0800
-045B: 3A 02 08              lda  var_0802
+0458: 2A 00 08              lhld var_player_addr
+045B: 3A 02 08              lda  var_player_stat
 045E: 77                    mov  m, a
 045F: EB                    xchg
 0460: 7E                    mov  a, m
-0461: 36 09                 mvi  m, 09h
-0463: 32 02 08              sta  var_0802
-0466: 22 00 08              shld var_0800
+0461: 36 09                 mvi  m, CHR_PLAYER
+0463: 32 02 08              sta  var_player_stat
+0466: 22 00 08              shld var_player_addr
 0469: C1                    pop  b
 046A: D1                    pop  d
 046B: E1                    pop  h
 046C: F1                    pop  psw
 046D: C9                    ret
-046E:               loc_046E:
-046E: 2A 00 08              lhld var_0800
+046E:               player_move_dispatch:
+046E: 2A 00 08              lhld var_player_addr
 0471: EB                    xchg
-0472: 21 03 08              lxi  h, var_0803
+0472: 21 03 08              lxi  h, var_key
 0475: 7E                    mov  a, m
 0476: E6 80                 ani  80h
 0478: CA AA 04              jz   loc_04AA
@@ -560,12 +584,12 @@
 049D: F1                    pop  psw
 049E: FE 80                 cpi  80h
 04A0: C2 AA 04              jnz  loc_04AA
-04A3: 21 03 08              lxi  h, var_0803
+04A3: 21 03 08              lxi  h, var_key
 04A6: 7E                    mov  a, m
 04A7: E6 7F                 ani  7Fh
 04A9: 77                    mov  m, a
 04AA:               loc_04AA:
-04AA: 21 03 08              lxi  h, var_0803
+04AA: 21 03 08              lxi  h, var_key
 04AD: 7E                    mov  a, m
 04AE: E6 7F                 ani  7Fh
 04B0: FE 08                 cpi  08h
@@ -580,9 +604,9 @@
 04C2:               loc_04C2:
 04C2: FE 1A                 cpi  1Ah
 04C4: C2 D7 04              jnz  loc_04D7
-04C7: 21 02 08              lxi  h, var_0802
+04C7: 21 02 08              lxi  h, var_player_stat
 04CA: 7E                    mov  a, m
-04CB: FE 48                 cpi  48h                     ; 'H'
+04CB: FE 48                 cpi  CHR_LAD
 04CD: C2 EF 04              jnz  loc_04EF
 04D0: 7B                    mov  a, e
 04D1: CD 2A 05              call de_row_down
@@ -590,11 +614,11 @@
 04D7:               loc_04D7:
 04D7: FE 19                 cpi  19h
 04D9: C2 EF 04              jnz  loc_04EF
-04DC: 21 02 08              lxi  h, var_0802
+04DC: 21 02 08              lxi  h, var_player_stat
 04DF: 7E                    mov  a, m
-04E0: FE 48                 cpi  48h                     ; 'H'
+04E0: FE 48                 cpi  CHR_LAD
 04E2: C2 EF 04              jnz  loc_04EF
-04E5: 21 00 08              lxi  h, var_0800
+04E5: 21 00 08              lxi  h, var_player_addr
 04E8: 5E                    mov  e, m
 04E9: 23                    inx  h
 04EA: 56                    mov  d, m
@@ -603,10 +627,10 @@
 04EF:               loc_04EF:
 04EF: EB                    xchg
 04F0: 7E                    mov  a, m
-04F1: FE 3D                 cpi  3Dh                     ; '='
+04F1: FE 3D                 cpi  CHR_FLOOR
 04F3: C2 03 05              jnz  loc_0503
 04F6:               loc_04F6:
-04F6: 21 03 08              lxi  h, var_0803
+04F6: 21 03 08              lxi  h, var_key
 04F9: 36 00                 mvi  m, 00h
 04FB: 23                    inx  h
 04FC: 36 00                 mvi  m, 00h
@@ -616,23 +640,23 @@
 0501: F1                    pop  psw
 0502: C9                    ret
 0503:               loc_0503:
-0503: FE 23                 cpi  23h                     ; '#'
+0503: FE 23                 cpi  CHR_BRICK
 0505: C2 0B 05              jnz  loc_050B
 0508: C3 F6 04              jmp  loc_04F6
 050B:               loc_050B:
-050B: FE 2D                 cpi  2Dh                     ; '-'
+050B: FE 2D                 cpi  CHR_BRIDGE
 050D: C2 13 05              jnz  loc_0513
 0510: C3 F6 04              jmp  loc_04F6
 0513:               loc_0513:
 0513: EB                    xchg
-0514: 2A 00 08              lhld var_0800
-0517: 3A 02 08              lda  var_0802
+0514: 2A 00 08              lhld var_player_addr
+0517: 3A 02 08              lda  var_player_stat
 051A: 77                    mov  m, a
 051B: EB                    xchg
 051C: 7E                    mov  a, m
-051D: 32 02 08              sta  var_0802
-0520: 36 09                 mvi  m, 09h
-0522: 22 00 08              shld var_0800
+051D: 32 02 08              sta  var_player_stat
+0520: 36 09                 mvi  m, CHR_PLAYER
+0522: 22 00 08              shld var_player_addr
 0525: C1                    pop  b
 0526: D1                    pop  d
 0527: E1                    pop  h
@@ -715,13 +739,13 @@
 0578: CD 2A 05              call de_row_down
 057B: EB                    xchg
 057C: 7E                    mov  a, m
-057D: FE 3D                 cpi  3Dh     ; '='
+057D: FE 3D                 cpi  CHR_FLOOR
 057F: CA C1 05              jz   loc_05C1
-0582: FE 23                 cpi  23h     ; '#'
+0582: FE 23                 cpi  CHR_BRICK
 0584: CA C1 05              jz   loc_05C1
-0587: FE 2D                 cpi  2Dh     ; '-'
+0587: FE 2D                 cpi  CHR_BRIDGE
 0589: CA C1 05              jz   loc_05C1
-058C: FE 48                 cpi  48h     ; 'H'
+058C: FE 48                 cpi  CHR_LAD
 058E: C2 9F 05              jnz  loc_059F
 0591: 7A                    mov  a, d
 0592: FE 1A                 cpi  1Ah     ; (RK86 blank glyph)
@@ -746,7 +770,7 @@
 05B7: CD 2A 05              call de_row_down
 05BA: EB                    xchg
 05BB: 5E                    mov  e, m
-05BC: 36 4F                 mvi  m, 4Fh                  ; 'O'
+05BC: 36 4F                 mvi  m, CHR_STONE
 05BE: F1                    pop  psw
 05BF: C1                    pop  b
 05C0: C9                    ret
@@ -775,15 +799,15 @@
 05E7: 2B                    dcx  h
 05E8:               loc_05E8:
 05E8: 7E                    mov  a, m
-05E9: FE 23                 cpi  23h                     ; '#'
+05E9: FE 23                 cpi  CHR_BRICK
 05EB: C2 F5 05              jnz  loc_05F5
 05EE:               loc_05EE:
 05EE: 7A                    mov  a, d
-05EF: EE 10                 xri  10h
+05EF: EE 10                 xri  ARROW_INVERSE         ; flip L <-> R (toggles bit 4)
 05F1: 57                    mov  d, a
 05F2: C3 DA 05              jmp  loc_05DA
 05F5:               loc_05F5:
-05F5: FE 48                 cpi  48h                     ; 'H'
+05F5: FE 48                 cpi  CHR_LAD
 05F7: C2 02 06              jnz  loc_0602
 05FA: CD 46 05              call prng_next
 05FD: D6 7F                 sui  7Fh
@@ -800,16 +824,16 @@
 060E: 69                    mov  l, c
 060F: 60                    mov  h, b
 0610: 5E                    mov  e, m
-0611: 36 4F                 mvi  m, 4Fh                  ; 'O'
+0611: 36 4F                 mvi  m, CHR_STONE
 0613: F1                    pop  psw
 0614: C1                    pop  b
 0615: C9                    ret
-0616:               loc_0616:
+0616:               stone_step:
 0616: E5                    push h
 0617: D5                    push d
 0618: C5                    push b
 0619: F5                    push psw
-061A: 21 21 08              lxi  h, table_0820 + 1
+061A: 21 21 08              lxi  h, stone_table + 1
 061D:               loc_061D:
 061D: 7E                    mov  a, m
 061E: 2B                    dcx  h
@@ -846,7 +870,7 @@
 0644:               loc_0644:
 0644: 7D                    mov  a, l
 0645: E5                    push h
-0646: 21 20 08              lxi  h, table_0820
+0646: 21 20 08              lxi  h, stone_table
 0649: 95                    sub  l
 064A: E1                    pop  h
 064B: D6 20                 sui  20h                     ; ' '
@@ -863,9 +887,9 @@
 0658: E5                    push h
 0659: D5                    push d
 065A: 7B                    mov  a, e
-065B: FE 09                 cpi  09h
+065B: FE 09                 cpi  CHR_PLAYER
 065D: C2 68 06              jnz  loc_0668
-0660: 21 11 08              lxi  h, var_0811
+0660: 21 11 08              lxi  h, var_dead
 0663: 36 FF                 mvi  m, 0FFh
 0665: C3 91 06              jmp  loc_0691
 0668:               loc_0668:
@@ -876,18 +900,18 @@
 0670: D5                    push d
 0671: C3 91 06              jmp  loc_0691
 0674:               loc_0674:
-0674: FE 2A                 cpi  2Ah                     ; '*'
+0674: FE 2A                 cpi  CHR_STONEKILL
 0676: C2 88 06              jnz  loc_0688
 0679: D1                    pop  d
 067A: E1                    pop  h
 067B: 11 55 1A              lxi  d, 1A55h
-067E: 36 2A                 mvi  m, 2Ah                  ; '*'
+067E: 36 2A                 mvi  m, CHR_STONEKILL
 0680: 21 00 00              lxi  h, 0000h
 0683: E5                    push h
 0684: D5                    push d
 0685: C3 91 06              jmp  loc_0691
 0688:               loc_0688:
-0688: FE 4F                 cpi  4Fh                     ; 'O'
+0688: FE 4F                 cpi  CHR_STONE
 068A: C2 91 06              jnz  loc_0691
 068D: D1                    pop  d
 068E: 1E 20                 mvi  e, 20h                  ; ' '
@@ -922,7 +946,7 @@
 06B3: 2A 05 08              lhld var_0805
 06B6:               loc_06B6:
 06B6: 7E                    mov  a, m
-06B7: FE 55                 cpi  55h                     ; 'U'
+06B7: FE 55                 cpi  CHR_STONEHOLDER
 06B9: C2 A1 06              jnz  loc_06A1
 06BC: E5                    push h
 06BD: C1                    pop  b
@@ -944,7 +968,7 @@
 06DC:               loc_06DC:
 06DC: CD 03 F8              call monitor_cin
 06DF: FE 50                 cpi  50h     ; 'P' — play
-06E1: CA 2A 01              jz   loc_012A
+06E1: CA 2A 01              jz   run_game
 06E4: FE 45                 cpi  45h     ; 'E' — exit (back to monitor)
 06E6: CA 6C F8              jz   monitor_prompt
 06E9: FE 4C                 cpi  4Ch     ; 'L'
@@ -1048,12 +1072,12 @@
                     ;   0812h : address of the flower (09h) glyph
                     ;   0805h : address of the first  'U' (55h) glyph
                     ;   0807h : address of the second 'U' glyph
-07C2:               loc_07C2:                                       ; offset=07C2h
+07C2:               find_player_and_stone:                                       ; offset=07C2h
 07C2: 06 09                 mvi  b, 09h                             ; flower glyph
 07C4: 21 C1 77              lxi  h, video_memory + 3*video_width + 7
 07C7: CD E0 07              call find_byte_b
 07CA: 22 12 08              shld var_0812
-07CD: 06 55                 mvi  b, 55h                             ; 'U'
+07CD: 06 55                 mvi  b, CHR_STONEHOLDER
 07CF: 21 C1 77              lxi  h, video_memory + 3*video_width + 7
 07D2: CD E0 07              call find_byte_b
 07D5: 22 05 08              shld var_0805
@@ -1088,12 +1112,12 @@
 07FA: 00 00 00 00
 07FE: 00 00
 
-0800: 77            var_0800:       db   77h                                       ; offset=0800h
+0800: 77            var_player_addr:       db   77h                                       ; offset=0800h
 0801: 7E            var_0801:       db   7Eh                                       ; offset=0801h
-0802: 2A            var_0802:       db   2Ah                                       ; 0802h: tick counter (reset when it hits 1Eh)
-0803: 00            var_0803:       db   00h                                       ; 0803h: direction flag (bit 7 mask in ani 80h)
-0804: 00            var_0804:       db   00h                                       ; offset=0804h
-                    ; 0805h:0806h — address of 1st 'U' marker found by loc_07C2
+0802: 2A            var_player_stat:       db   2Ah                                       ; 0802h: tile under the player (PlayerStat)
+0803: 00            var_key:       db   00h                                       ; 0803h: direction flag (bit 7 mask in ani 80h)
+0804: 00            var_jump_byte:       db   00h                                       ; offset=0804h
+                    ; 0805h:0806h — address of 1st 'U' marker found by find_player_and_stone
 0805: 79 78         var_0805:       db   79h, 78h
                     ; 0807h:0808h — address of 2nd 'U' marker
 0807: 83 78         var_0807:       db   83h, 78h
@@ -1103,18 +1127,18 @@
 080E: 7D            var_080E:       db   7Dh
 080F: 00            var_080F:       db   00h                                       ; offset=080Fh
 0810: 08            var_0810:       db   08h
-0811: FF            var_0811:       db   0FFh                                      ; offset=0811h
+0811: FF            var_dead:       db   0FFh                                      ; offset=0811h
                     ; 0812h:0813h — address of flower marker
 0812: DB 7D         var_0812:       db   0DBh, 7Dh
                     ; HUD BCD counters (see CLAUDE.md "Known game concepts")
-0814: 07            var_0814:       db   07h                                       ; 0814h BCD counter
-0815: 35            var_0815:       db   35h                                       ; 0815h BCD counter
-0816: 08            var_0816:       db   08h                                       ; offset=0816h
-0817: 01            var_0817:       db   01h                                       ; 0817h BCD counter (boot = 01h)
+0814: 07            var_attempts:       db   07h                                       ; 0814h BCD counter
+0815: 35            var_time:       db   35h                                       ; 0815h BCD counter
+0816: 08            var_tick:       db   08h                                       ; offset=0816h
+0817: 01            var_level:       db   01h                                       ; 0817h BCD counter (boot = 01h)
                     ; 0818h:0819h — 4-digit BCD score (lo, hi)
-0818: 00            var_0818:       db   00h         ; score lo (BCD)
-0819: 00            var_0819:       db   00h         ; score hi (BCD)
-081A: 00            var_081A:       db   00h                                       ; offset=081Ah
+0818: 00            var_score_lo:       db   00h         ; score lo (BCD)
+0819: 00            var_score_hi:       db   00h         ; score hi (BCD)
+081A: 00            var_exit_touched:       db   00h                                       ; offset=081Ah
                     ; 081Bh:081Ch — 16-bit pointer, initialized at boot to 0862h (table base)
 081B: 62 08         var_081B:       db   62h, 08h
 
@@ -1125,7 +1149,7 @@
                     ; video_addr_hi, byte, byte]. The 16-bit address points into video memory
                     ; (76D0h..7FF3h); the trailing two bytes are likely [glyph/count, tile_type].
                     ; Terminated by FFFFh sentinel at 0860h.
-0820:               table_0820:                                     ; offset=0820h
+0820:               stone_table:                                     ; offset=0820h
 0820: 8C 7E 00 08           db   8Ch, 7Eh, 00h, 08h      ; 7E8Ch + 00 08
 0824: A3 7E 00 08           db   0A3h, 7Eh, 00h, 08h     ; 7EA3h + 00 08
 0828: EC 7A 00 18           db   0ECh, 7Ah, 00h, 18h     ; 7AECh + 00 18
@@ -1145,7 +1169,7 @@
 0860: FF FF                 db   0FFh, 0FFh              ; offset=0860h — end-of-table sentinel
 
                     ; Level-pointer table. var_081B is initialized to 0862h and advanced by 2
-                    ; bytes each time the player starts a new level (at loc_012A). Each entry
+                    ; bytes each time the player starts a new level (at run_game). Each entry
                     ; is a 16-bit pointer to RLE-encoded screen data for one level. 0000h
                     ; terminates the table (game won). 27 entries + sentinel = 7 unique levels
                     ; played in a progressive "each round adds one rung" pattern:
@@ -2681,162 +2705,3 @@
 1F18: 63 00 FF 00
 1F1C: FF 00 FF 00
 
-
-Symbol Table:
-
-CURSOR_R24_C21           02B8
-CURSOR_R24_C31           02BD
-CURSOR_R24_C44           02C2
-CURSOR_R24_C8            02B3
-DE_ROW_DOWN              052A
-DE_ROW_DOWN_RET          0534
-DE_ROW_UP                0537
-DE_ROW_UP_RET            0542
-DELAY_BC                 018F
-DELAY_PRESET             018C
-FIND_BYTE_B              07E0
-GAME_TICK_INNER          01D7
-GAME_TICK_OUTER          01D2
-LEVEL_A                  0C40
-LEVEL_B                  0E20
-LEVEL_C                  13A0
-LEVEL_D                  1080
-LEVEL_E                  15D0
-LEVEL_F                  18D0
-LEVEL_G                  1C00
-LEVEL_TABLE              0862
-LOC_0100                 0100
-LOC_012A                 012A
-LOC_014A                 014A
-LOC_020A                 020A
-LOC_021C                 021C
-LOC_0222                 0222
-LOC_023B                 023B
-LOC_0249                 0249
-LOC_0265                 0265
-LOC_0279                 0279
-LOC_02C7                 02C7
-LOC_02D5                 02D5
-LOC_02E2                 02E2
-LOC_02E5                 02E5
-LOC_02F6                 02F6
-LOC_0314                 0314
-LOC_0319                 0319
-LOC_031E                 031E
-LOC_032B                 032B
-LOC_0348                 0348
-LOC_035D                 035D
-LOC_035F                 035F
-LOC_0371                 0371
-LOC_0377                 0377
-LOC_037C                 037C
-LOC_0391                 0391
-LOC_039E                 039E
-LOC_03AF                 03AF
-LOC_03BA                 03BA
-LOC_03CB                 03CB
-LOC_03DC                 03DC
-LOC_03ED                 03ED
-LOC_03FE                 03FE
-LOC_040F                 040F
-LOC_0416                 0416
-LOC_043F                 043F
-LOC_0444                 0444
-LOC_0455                 0455
-LOC_046E                 046E
-LOC_0486                 0486
-LOC_0492                 0492
-LOC_049D                 049D
-LOC_04AA                 04AA
-LOC_04B9                 04B9
-LOC_04C2                 04C2
-LOC_04D7                 04D7
-LOC_04EF                 04EF
-LOC_04F6                 04F6
-LOC_0503                 0503
-LOC_050B                 050B
-LOC_0513                 0513
-LOC_056F                 056F
-LOC_059F                 059F
-LOC_05B6                 05B6
-LOC_05C1                 05C1
-LOC_05D7                 05D7
-LOC_05D9                 05D9
-LOC_05DA                 05DA
-LOC_05E7                 05E7
-LOC_05E8                 05E8
-LOC_05EE                 05EE
-LOC_05F5                 05F5
-LOC_0602                 0602
-LOC_060E                 060E
-LOC_0616                 0616
-LOC_061D                 061D
-LOC_0644                 0644
-LOC_0656                 0656
-LOC_0668                 0668
-LOC_0674                 0674
-LOC_0688                 0688
-LOC_0691                 0691
-LOC_0696                 0696
-LOC_06A1                 06A1
-LOC_06A3                 06A3
-LOC_06AB                 06AB
-LOC_06B6                 06B6
-LOC_06C5                 06C5
-LOC_06CB                 06CB
-LOC_06DC                 06DC
-LOC_0711                 0711
-LOC_072B                 072B
-LOC_074D                 074D
-LOC_07A1                 07A1
-LOC_07A3                 07A3
-LOC_07C2                 07C2
-LOC_07E7                 07E7
-MONITOR_CIN              F803
-MONITOR_COUT             F809
-MONITOR_CURC             F821
-MONITOR_HEXB             F815
-MONITOR_PROMPT           F86C
-MONITOR_PUTS             F818
-MONITOR_SCAN_KBD         F81B
-MSG_CLEAR_READY          08E8
-MSG_CLEAR_TOP            0786
-MSG_CONGRATS             0767
-MSG_CURSOR_R19_C21       075D
-MSG_CURSOR_R21_C21       0762
-MSG_GET_READY            08D0
-NEW_LIFE                 0197
-NEW_LIFE_RESET_ACTORS    019D
-PAINT_SCREEN             015B
-PAINT_SCREEN_FILL        0178
-PAINT_SCREEN_LOOP        015E
-PAINT_SCREEN_RLE         0174
-PRNG_NEXT                0546
-PRNG_NO_FEEDBACK         055F
-PRNG_STATE               0809
-SCREEN_DATA              0900
-TABLE_0820               0820
-VAR_0800                 0800
-VAR_0801                 0801
-VAR_0802                 0802
-VAR_0803                 0803
-VAR_0804                 0804
-VAR_0805                 0805
-VAR_0807                 0807
-VAR_080D                 080D
-VAR_080E                 080E
-VAR_080F                 080F
-VAR_0810                 0810
-VAR_0811                 0811
-VAR_0812                 0812
-VAR_0814                 0814
-VAR_0815                 0815
-VAR_0816                 0816
-VAR_0817                 0817
-VAR_0818                 0818
-VAR_0819                 0819
-VAR_081A                 081A
-VAR_081B                 081B
-VIDEO_HEIGHT             001E
-VIDEO_MEMORY             76D0
-VIDEO_WIDTH              004E

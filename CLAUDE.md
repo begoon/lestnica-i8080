@@ -74,18 +74,26 @@ Findings accumulated while annotating. Update as more becomes clear.
 
 ### Tile characters
 
-From the in-game legend on the title screen (decoded via `render_screen.py`):
+Cross-referenced with a Z80 port of the same game at
+https://github.com/imsushka/TangNano20K-VIDEO/blob/main/soft/LESTNICA.asm
+which has preserved full semantic names. See `CHR_*` equates in the asm.
 
-- `H` (48h) — **лестница** (ladder)
-- `O` (4Fh) — **увесистый булыжник** (heavy boulder)
-- `$` (24h) — **выход из уровня** (level exit)
-- `↑` (0Bh) — **очень плохая штука** (very bad thing — hazard/spike)
-- `.` (2Eh) — **очень хитрая штука** (very tricky thing — trap)
-- `⌐` (1Eh) — **приятная вещь** (pleasant thing — bonus/pickup)
-- `✿` (09h) — **the player** (flower glyph; position cached in `var_0812`)
-- `=` (3Dh), `#` (23h), `-` (2Dh) — solid/floor/wall tiles (treated
-  equivalently in the check near offset 05B0h)
-- `1Ah` — RK86 blank glyph (used as "empty" marker in some checks)
+- `CHR_PLAYER` = 09h (`✿`) — the player; position cached in `var_0812`
+- `CHR_MUSHROOM` = 0Bh (`↑`) — "очень плохая штука"; touching = dead
+- `CHR_APPLE` = 1Eh (`⌐`) — "приятная вещь"; +90 BCD points
+- `CHR_STONEHOLDER` = 55h (`U`) — spawns falling stones (two per level,
+  positions cached in `var_0805` and `var_0807` by `loc_07C2`)
+- `CHR_STONE` = 4Fh (`O`) — "увесистый булыжник"; kills on contact,
+  supports player weight (prevents fall)
+- `CHR_STONEKILL` = 2Ah (`*`) — stone-kill splat animation
+- `CHR_LAD` = 48h (`H`) — "лестница"; press UP with jump-flag set to climb
+- `CHR_JOKER` = 2Eh (`.`) — "очень хитрая штука"; sets random direction,
+  50% chance of jump-2 (uses `prng_next`)
+- `CHR_EXIT` = 24h (`$`) — "выход из уровня"; awards `vTime × 2` bonus
+- `CHR_BRICK` = 23h (`#`) — solid wall
+- `CHR_BRIDGE` = 2Dh (`-`) — horizontal bridge
+- `CHR_FLOOR` = 3Dh (`=`) — horizontal floor
+- `1Ah` — blank glyph ("empty" marker)
 
 ### Controls (from title screen legend)
 
@@ -107,14 +115,29 @@ Used by the game input handler near `loc_03BA`:
 
 Game state lives in fixed memory cells. Identified so far:
 
+- `0800h:0801h` (`var_player_addr`) — player's video-memory pointer
+  (`PS_AddrTmp` in Z80 port). Initially set to the flower's position.
+- `0802h` (`var_player_stat`) — **tile under the player** (`PlayerStat`
+  in Z80 port). Driven by `player_step` to detect apple / mushroom /
+  stone / ladder / joker / exit on each frame.
+- `0803h` (`var_key`) — low 7 bits = last arrow code, bit 7 = queued jump flag.
+- `0804h` (`var_jump_byte`) — jump-trajectory bit-pattern (7-frame arc).
 - `0809h..080Ch` — 32-bit PRNG state (`prng_state`); seeded at boot with
   `5A 34 17 71`. Advanced by `prng_next` (LFSR, taps at bits 30 & 6).
-- `0814h` — 2-digit BCD **resource counter** (likely lives or time); HUD at
-  row 24 col 21. Decremented elsewhere (wrap → `jmp loc_0100` = game restart),
-  incremented by 1 every 100 score points (bonus-life mechanic)
-- `0815h` — 2-digit BCD counter, HUD at row 24 col 44 (dec — wrap triggers 2× BEL)
-- `0817h` — 2-digit BCD counter, HUD at row 24 col  8 (inc only seen)
-- `0818h:0819h` — 4-digit BCD, HUD at row 24 col 31 (likely **score**; 16-bit, lo at 0818h, hi at 0819h — rendered hi-then-lo)
+- `0811h` (`var_dead`) — set to `0FFh` when player dies (stone/mushroom hit).
+- `081Ah` (`var_exit_touched`) — set to `0FFh` when player reaches the exit.
+- `0814h` (`var_attempts`) — **LIVES / attempts** counter (BCD); HUD at row 24
+  col 21. Init 07h. Wrap-to-zero → `jmp loc_0100` = game over; +1 every 100
+  score points (bonus-life mechanic). Z80 port calls it `vPopitok`.
+- `0815h` (`var_time`) — **TIME LIMIT** per level (BCD); HUD at row 24 col 44.
+  Reset to 40h each life. Decremented when `var_0816` sub-tick underflows.
+  Wrap-to-zero → player dies. 2× BEL warns on low time.
+- `0816h` — sub-tick counter (init 0Fh in `game_tick_outer`), decremented
+  every iteration of the inner loop. Drives per-frame cadence.
+- `0817h` (`var_level`) — **LEVEL NUMBER**; HUD at row 24 col 8 (BCD). Init 01h.
+  Incremented on exit touch.
+- `0818h:0819h` (`var_score`) — 4-digit BCD **SCORE**; HUD at row 24 col 31.
+  Lo at 0818h, hi at 0819h — rendered hi-then-lo.
 
 All four HUD fields use `monitor_hexb`. Because values are BCD, the hex
 rendering also reads correctly as decimal (e.g. BCD byte 0x42 prints "42").
@@ -141,6 +164,42 @@ initialized on each new life.
 
 When you see `lxi h, 018Eh` / `mvi m, XXh` near the menu handlers,
 it's patching one of these — not reading a variable.
+
+### Gameplay mechanics
+
+Confirmed via cross-reference with the Z80 port and the in-game legend.
+
+- **Player death**: stepping onto a cell containing `CHR_STONE` or
+  `CHR_MUSHROOM` sets a `PlayerDead` flag and ends the life.
+- **Exit**: touching `CHR_EXIT` completes the level (`inc_level`). Bonus
+  awarded = `var_time` (plain BCD); `var_time` is then zeroed,
+  `var_level++` is BCD-incremented, and the next level pointer loads.
+  (Z80 port doubles the bonus via `RLC c`; RK86 original does not.)
+- **Apple**: `CHR_APPLE` is consumed on touch, awards **45 BCD** points
+  (the Z80 port doubles this with `RLC c` to 90; the RK86 original does not).
+- **Joker** (`CHR_JOKER`): when the player stands on it, calls `prng_next`
+  twice — first to pick random L/R direction, second to decide (50%)
+  whether to queue a 2-cell jump.
+- **Ladder** (`CHR_LAD`): UP or DOWN arrow climbs while standing on it.
+  Jump-from-ladder is consumed (clears the jump flag in `var_key`).
+- **Bridge** (`CHR_BRIDGE`) is **one-use** — stepping onto it writes `0`
+  into the cell, so the bridge disappears after crossing.
+- **Fall rule**: if the cell directly below the player is not
+  `CHR_FLOOR`/`CHR_BRICK`/`CHR_BRIDGE` and no stone is within 3 cells
+  below, the player falls.
+- **Jump arc** — 7-frame parabola encoded in `var_key + 1`. Each frame
+  shifts the byte left (RLA); tests of bits `0Ch` and `0C0h` pick the
+  horizontal/vertical deltas. Landing frame (byte=80h) clears the flag.
+  Trajectory: `2→(0,0), 4→(+1,+1), 8→(+2,+2), 10→(+2,+3), 20→(+2,+4),
+  40→(+1,+5), 80→(0,+6)`.
+- **Stone AI**: each tick every `stone_table` slot tries to move DOWN;
+  blocked by FLOOR/BRICK/BRIDGE/LAD (on LAD 50% override to go L/R);
+  on a wall it flips direction via `ARROW_INVERSE` XOR. Stones falling onto
+  the player → death. Stone-on-stone creates a "double-stone" blank
+  placeholder. New stones spawn at `CHR_STONEHOLDER` cells.
+- **Screen wrap**: horizontal movement wraps at the map width
+  (our `video_width` = 78; the Z80 port uses 64). Logic masks L/E
+  with `MAP_WIDTH - 1` to detect wrap, then rolls back.
 
 ### BCD arithmetic idioms
 

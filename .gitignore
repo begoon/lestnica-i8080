@@ -4,3 +4,4 @@ lestnica.bin
 0100-1F1F.bin
 node_modules
 bun.lock
+__pycache__
